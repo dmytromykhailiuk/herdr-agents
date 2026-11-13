@@ -1,0 +1,9 @@
+[ui]
+theme = "dark"
+
+[session]
+# resume_agents_on_restore = true
+restore_layout = true
+
+[keys]
+prefix = "ctrl+b"

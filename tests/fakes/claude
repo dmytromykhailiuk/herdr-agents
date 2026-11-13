@@ -1,0 +1,7 @@
+#!/usr/bin/env python3
+import sys
+
+if sys.argv[1:] == ["--version"]:
+    print("2.1.0 (Claude Code)")
+    sys.exit(0)
+sys.exit("fake claude: only --version is supported")

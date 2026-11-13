@@ -1,0 +1,35 @@
+{
+  "description": "Run Claude sub-agents in Herdr tabs: inject orchestrator and Herdr rules at session start, record launches for restore and forget sessions the user exits, redirect the Agent tool to herdr-agent inside Herdr, and allow herdr-agent commands without prompts.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "^(startup|resume|clear|compact)$",
+        "hooks": [
+          {"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/skills/herdr-agent/bin/herdr-agent\" hook session-start", "timeout": 10}
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "^(prompt_input_exit|logout)$",
+        "hooks": [
+          {"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/skills/herdr-agent/bin/herdr-agent\" hook session-end", "timeout": 5}
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(Agent|Task)$",
+        "hooks": [
+          {"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/skills/herdr-agent/bin/herdr-agent\" hook pre-agent", "timeout": 5}
+        ]
+      },
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/skills/herdr-agent/bin/herdr-agent\" hook pre-bash", "timeout": 5}
+        ]
+      }
+    ]
+  }
+}

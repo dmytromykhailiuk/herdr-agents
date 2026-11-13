@@ -1,0 +1,8 @@
+[ui]
+theme = "dark"
+
+[ session ]
+restore_layout = true
+
+[[startup_item]]
+name = "x"

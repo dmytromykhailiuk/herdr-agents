@@ -1,0 +1,19 @@
+{
+  "name": "herdr-agents",
+  "owner": {
+    "name": "dmytromykhailiuk"
+  },
+  "metadata": {
+    "description": "Claude sub-agents in Herdr tabs."
+  },
+  "plugins": [
+    {
+      "name": "herdr-agents",
+      "source": "./",
+      "description": "Run Claude sub-agents as real interactive sessions in Herdr tabs, with orchestrator rules, Agent-tool redirect and restart resume.",
+      "version": "0.1.0",
+      "category": "productivity",
+      "keywords": ["herdr", "sub-agents", "orchestrator", "claude-code"]
+    }
+  ]
+}

@@ -1,0 +1,532 @@
+#!/usr/bin/env python3
+import fcntl
+import json
+import os
+import subprocess
+import sys
+import time
+
+STATE_PATH = os.environ.get("FAKE_HERDR_STATE")
+CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+MUTATING = {
+    ("tab", "create"), ("tab", "close"), ("pane", "close"), ("pane", "send-keys"),
+    ("agent", "start"), ("agent", "prompt"), ("agent", "send-keys"),
+    ("plugin", "link"), ("plugin", "unlink"), ("server", "reload-config"),
+}
+
+DEFAULTS = {
+    "version": "0.9.3",
+    "workspace_id": "w1",
+    "counter": 0,
+    "calls": [],
+    "tabs": {},
+    "panes": {},
+    "agents": {},
+    "plugins": [],
+    "agent_start_error": None,
+    "start_blocked": False,
+    "shell_ready_after": 0,
+    "auto_result": True,
+    "prompt_stuck": 0,
+    "screen_rows": 0,
+    "api_error_first_turn": False,
+    "tab_create_error": None,
+    "server_running": True,
+    "integration_status": "claude: current (v10) (~/.claude/hooks/herdr-agent-state.sh)\n",
+    "sessions": [{"default": True, "name": "default", "running": True}],
+}
+
+
+def enc(n):
+    out = ""
+    while True:
+        out = CROCKFORD[n % 32] + out
+        n //= 32
+        if n == 0:
+            return out
+
+
+class Fail(Exception):
+    def __init__(self, code, message, rc=1):
+        self.code, self.message, self.rc = code, message, rc
+
+
+def load():
+    if not STATE_PATH:
+        sys.exit("fake herdr: FAKE_HERDR_STATE is not set")
+    try:
+        with open(STATE_PATH, encoding="utf-8") as f:
+            state = json.load(f)
+    except (FileNotFoundError, ValueError):
+        state = {}
+    for key, value in DEFAULTS.items():
+        state.setdefault(key, json.loads(json.dumps(value)))
+    return state
+
+
+def save(state):
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+    os.replace(tmp, STATE_PATH)
+
+
+def next_n(state):
+    taken = set(state["tabs"]) | set(state["panes"])
+    taken |= {p["terminal_id"] for p in state["panes"].values()}
+    while True:
+        state["counter"] += 1
+        n = state["counter"]
+        ids = {f"{ws}:{kind}{enc(n)}" for ws in {state["workspace_id"]} | {t["workspace_id"] for t in state["tabs"].values()}
+               for kind in ("t", "p")}
+        if not (ids & taken) and f"term_{n:014x}" not in taken:
+            return n
+
+
+def envelope_id(argv):
+    return "cli:" + ":".join(a.replace("-", "_") for a in argv[:2])
+
+
+def public_pane(p):
+    out = {
+        "cwd": p["cwd"],
+        "focused": False,
+        "foreground_cwd": p["cwd"],
+        "pane_id": p["pane_id"],
+        "revision": p.get("revision", 0),
+        "scroll": {"max_offset_from_bottom": 0, "offset_from_bottom": 0, "viewport_rows": 40},
+        "tab_id": p["tab_id"],
+        "terminal_id": p["terminal_id"],
+        "workspace_id": p["workspace_id"],
+        "agent_status": p.get("agent_status", "unknown"),
+    }
+    if p.get("agent"):
+        out["agent"] = p["agent"]
+    if p.get("agent_session"):
+        out["agent_session"] = p["agent_session"]
+    if p.get("title"):
+        out["terminal_title"] = "✳ " + p["title"]
+        out["terminal_title_stripped"] = p["title"]
+    return out
+
+
+def public_agent(p):
+    out = public_pane(p)
+    out["interactive_ready"] = p.get("agent_status") != "blocked"
+    out["state_change_seq"] = p.get("revision", 0)
+    if p.get("agent_name"):
+        out["name"] = p["agent_name"]
+    return out
+
+
+def public_tab(state, t):
+    panes = [p for p in state["panes"].values() if p["tab_id"] == t["tab_id"]]
+    statuses = [p.get("agent_status", "unknown") for p in panes]
+    status = "unknown"
+    for s in ("blocked", "working", "idle", "done"):
+        if s in statuses:
+            status = s
+            break
+    return {
+        "agent_status": status,
+        "focused": False,
+        "label": t.get("label", ""),
+        "number": t["number"],
+        "pane_count": len(panes),
+        "tab_id": t["tab_id"],
+        "workspace_id": t["workspace_id"],
+    }
+
+
+def new_pane(state, tab, cwd, env, **extra):
+    n = next_n(state)
+    pane = {
+        "pane_id": f"{tab['workspace_id']}:p{enc(n)}",
+        "tab_id": tab["tab_id"],
+        "workspace_id": tab["workspace_id"],
+        "terminal_id": f"term_{n:014x}",
+        "cwd": cwd,
+        "env": env,
+        "shell_pid": 40000 + n * 10,
+        "shell_name": "zsh",
+        "agent_status": "unknown",
+        "agent": None,
+        "agent_session": None,
+        "agent_name": None,
+        "process_argv": None,
+        "shell_calls": 0,
+        "shell_ready_after": state["shell_ready_after"],
+        "revision": 0,
+        "keys": [],
+        "screen": "",
+    }
+    pane.update(extra)
+    state["panes"][pane["pane_id"]] = pane
+    return pane
+
+
+def find_pane(state, pane_id):
+    p = state["panes"].get(pane_id)
+    if p is None:
+        raise Fail("pane_not_found", f"pane {pane_id} not found")
+    return p
+
+
+def find_agent(state, target):
+    for p in state["panes"].values():
+        if p.get("agent_name") == target or (p.get("agent") and p["pane_id"] == target):
+            return p
+    raise Fail("agent_not_found", f"agent target {target} not found")
+
+
+def find_tab(state, tab_id):
+    t = state["tabs"].get(tab_id)
+    if t is None:
+        raise Fail("tab_not_found", f"tab {tab_id} not found")
+    return t
+
+
+def opts(args, flags_with_value, bool_flags=()):
+    values, multi, rest, positional = {}, {}, [], []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            rest = args[i + 1:]
+            break
+        if a in flags_with_value:
+            if i + 1 >= len(args):
+                raise Fail("usage", f"{a} needs a value", 2)
+            values[a] = args[i + 1]
+            multi.setdefault(a, []).append(args[i + 1])
+            i += 2
+            continue
+        if a in bool_flags:
+            values[a] = True
+            i += 1
+            continue
+        positional.append(a)
+        i += 1
+    return values, multi, rest, positional
+
+
+def shell_is_ready(pane):
+    return pane["shell_calls"] > pane.get("shell_ready_after", 0)
+
+
+def process_info(state, pane):
+    pane["shell_calls"] += 1
+    shell = {"argv0": pane["shell_name"], "cwd": pane["cwd"], "name": pane["shell_name"], "pid": pane["shell_pid"]}
+    if pane.get("process_argv"):
+        argv = pane["process_argv"]
+        procs = [{
+            "argv": argv, "argv0": argv[0], "cmdline": " ".join(argv), "cwd": pane["cwd"],
+            "name": os.path.basename(argv[0]), "pid": pane["shell_pid"] + 1,
+        }]
+    elif shell_is_ready(pane):
+        procs = [shell]
+    else:
+        procs = [{"argv": ["sleep", "1"], "argv0": "sleep", "cmdline": "sleep 1", "cwd": pane["cwd"],
+                  "name": "sleep", "pid": pane["shell_pid"] + 1}]
+    return {
+        "foreground_process_group_id": procs[0]["pid"],
+        "foreground_processes": procs,
+        "pane_id": pane["pane_id"],
+        "shell_pid": pane["shell_pid"],
+    }
+
+
+def pane_screen(pane):
+    if pane.get("process_argv"):
+        return pane.get("screen") or "Claude Code\n"
+    if shell_is_ready(pane):
+        return "Last login: Mon Jan  1 00:00:00 on ttys000\nuser@host % "
+    return "Last login: Mon Jan  1 00:00:00 on ttys000\n"
+
+
+def claude_arg(argv, flag):
+    for i, a in enumerate(argv):
+        if a == flag and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith(flag + "="):
+            return a.split("=", 1)[1]
+    return None
+
+
+def transcript_path(pane, sid):
+    config = (pane.get("env") or {}).get("CLAUDE_CONFIG_DIR") or os.path.join(os.environ.get("HOME", "~"), ".claude")
+    return os.path.join(os.path.expanduser(config), "projects", "-fake", f"{sid}.jsonl")
+
+
+def run_stop_hook(state, pane, text):
+    argv = pane.get("process_argv") or []
+    settings_path = claude_arg(argv, "--settings")
+    sid = (pane.get("agent_session") or {}).get("value", "")
+    n_prompts = pane.get("prompts", 0)
+    message = f"RESULT: {text}"
+    tpath = transcript_path(pane, sid)
+    entry = {"type": "assistant", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+             "message": {"role": "assistant", "model": "fake", "content": [{"type": "text", "text": message}]}}
+    if state["api_error_first_turn"] and n_prompts == 1:
+        message = "API Error: 529 overloaded"
+        entry = {"type": "assistant", "isApiErrorMessage": True,
+                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                 "message": {"role": "assistant", "model": "<synthetic>",
+                             "content": [{"type": "text", "text": message}]}}
+    os.makedirs(os.path.dirname(tpath), exist_ok=True)
+    with open(tpath, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+    if not settings_path or not os.path.exists(settings_path):
+        return
+    with open(settings_path, encoding="utf-8") as f:
+        settings = json.load(f)
+    groups = (settings.get("hooks") or {}).get("Stop") or []
+    payload = json.dumps({"session_id": sid, "last_assistant_message": message, "transcript_path": tpath,
+                          "hook_event_name": "Stop"})
+    env = dict(os.environ)
+    env.update(pane.get("env") or {})
+    env["HERDR_PANE_ID"] = pane["pane_id"]
+    for group in groups:
+        for hook in group.get("hooks", []):
+            if hook.get("type") == "command":
+                subprocess.run(hook["command"], shell=True, input=payload, text=True, env=env,
+                               cwd=pane["cwd"], capture_output=True, timeout=hook.get("timeout", 30))
+
+
+def cmd_tab_create(state, args):
+    v, multi, _, _ = opts(args, ("--workspace", "--cwd", "--label", "--env"), ("--focus", "--no-focus"))
+    if state["tab_create_error"]:
+        raise Fail(**state["tab_create_error"])
+    workspace = v.get("--workspace") or state["workspace_id"]
+    env = {}
+    for kv in multi.get("--env", []):
+        if "=" not in kv:
+            raise Fail("invalid_env", f"invalid --env {kv}", 2)
+        k, val = kv.split("=", 1)
+        env[k] = val
+    n = next_n(state)
+    tab = {"tab_id": f"{workspace}:t{enc(n)}", "workspace_id": workspace, "label": v.get("--label", ""),
+           "number": 1 + len(state["tabs"])}
+    state["tabs"][tab["tab_id"]] = tab
+    pane = new_pane(state, tab, v.get("--cwd") or os.getcwd(), env)
+    return {"tab": public_tab(state, tab), "root_pane": public_pane(pane), "type": "tab_created"}
+
+
+def cmd_tab_get(state, args):
+    return {"tab": public_tab(state, find_tab(state, args[0])), "type": "tab_info"}
+
+
+def cmd_tab_close(state, args):
+    tab = find_tab(state, args[0])
+    for pid in [p["pane_id"] for p in state["panes"].values() if p["tab_id"] == tab["tab_id"]]:
+        del state["panes"][pid]
+    del state["tabs"][tab["tab_id"]]
+    return {"type": "ok"}
+
+
+def cmd_pane_get(state, args):
+    return {"pane": public_pane(find_pane(state, args[0])), "type": "pane_info"}
+
+
+def cmd_pane_list(state, args):
+    return {"panes": [public_pane(p) for p in state["panes"].values()], "type": "pane_list"}
+
+
+def cmd_pane_close(state, args):
+    pane = find_pane(state, args[0])
+    del state["panes"][pane["pane_id"]]
+    tab = state["tabs"].get(pane["tab_id"])
+    if tab and not any(p["tab_id"] == tab["tab_id"] for p in state["panes"].values()):
+        del state["tabs"][tab["tab_id"]]
+    return {"type": "ok"}
+
+
+def cmd_pane_process_info(state, args):
+    v, _, _, pos = opts(args, ("--pane",))
+    pane = find_pane(state, v.get("--pane") or (pos[0] if pos else ""))
+    return {"process_info": process_info(state, pane), "type": "pane_process_info"}
+
+
+def cmd_pane_send_keys(state, args):
+    pane = find_pane(state, args[0])
+    pane["keys"].extend(args[1:])
+    return {"type": "ok"}
+
+
+def cmd_pane_read(state, args):
+    _, _, _, pos = opts(args, ("--source", "--lines", "--format"), ("--ansi", "--raw"))
+    return find_pane(state, pos[0]), None
+
+
+def cmd_agent_get(state, args):
+    return {"agent": public_agent(find_agent(state, args[0])), "type": "agent_info"}
+
+
+def cmd_agent_list(state, args):
+    return {"agents": [public_agent(p) for p in state["panes"].values() if p.get("agent")], "type": "agent_list"}
+
+
+def cmd_agent_read(state, args):
+    _, _, _, pos = opts(args, ("--source", "--lines", "--format"), ("--ansi", "--raw"))
+    return find_agent(state, pos[0]), None
+
+
+def stuck_screen(pane, lines):
+    rule = "─" * 60
+    body = ["❯ " + ln for ln in pane["pending_prompt"].splitlines()] or ["❯ "]
+    full = ["previous output"] + [rule] + body + [rule, "  ? for shortcuts"]
+    limit = min(n for n in (lines, pane.get("screen_rows") or 0) if n) if (lines or pane.get("screen_rows")) else len(full)
+    return "\n".join(full[-limit:])
+
+
+def cmd_agent_send_keys(state, args):
+    pane = find_agent(state, args[0])
+    pane["keys"].extend(args[1:])
+    if pane.get("pending_prompt") is not None and "enter" in [k.lower() for k in args[1:]]:
+        pane["stuck_left"] = pane.get("stuck_left", 1) - 1
+        if pane["stuck_left"] <= 0:
+            text = pane.pop("pending_prompt")
+            pane.pop("stuck_left", None)
+            submit_prompt(state, pane, text)
+    return {"type": "ok"}
+
+
+def cmd_agent_start(state, args):
+    v, _, rest, pos = opts(args, ("--kind", "--pane", "--timeout"))
+    name = pos[0] if pos else None
+    pane = find_pane(state, v.get("--pane", ""))
+    if state["agent_start_error"]:
+        raise Fail(**state["agent_start_error"])
+    if any(p.get("agent_name") == name for p in state["panes"].values()):
+        raise Fail("agent_name_taken", f"agent name {name} is already in use")
+    if not shell_is_ready(pane) or pane.get("process_argv"):
+        raise Fail("pane_not_at_shell_prompt", f"pane {pane['pane_id']} is not at an interactive shell prompt")
+    kind = v.get("--kind", "claude")
+    sid = claude_arg(rest, "--session-id") or claude_arg(rest, "--resume") or f"fake-{enc(next_n(state))}"
+    pane.update(process_argv=[kind] + rest, agent=kind, agent_name=name, prompts=0,
+                agent_session={"agent": kind, "kind": "id", "source": "herdr:claude", "value": sid},
+                title=name or kind)
+    if state["start_blocked"]:
+        pane["agent_status"] = "blocked"
+        pane["screen"] = "Do you trust the files in this folder?\n❯ 1. Yes, proceed\n  2. No, exit\n"
+        raise Fail("agent_not_ready", f"agent {name} did not become ready: blocked on a dialog")
+    pane["agent_status"] = "idle"
+    pane["revision"] += 1
+    return {"agent": public_agent(pane), "type": "agent_started"}
+
+
+def cmd_agent_prompt(state, args):
+    _, _, _, pos = opts(args, ("--until", "--timeout"), ("--wait",))
+    pane = find_agent(state, pos[0])
+    if pane["agent_status"] == "blocked":
+        raise Fail("agent_blocked", f"agent {pos[0]} is blocked")
+    text = pos[1] if len(pos) > 1 else ""
+    if state["prompt_stuck"]:
+        pane["pending_prompt"] = text
+        pane["stuck_left"] = int(state["prompt_stuck"])
+        pane["screen_rows"] = state["screen_rows"]
+        pane["revision"] += 1
+        return {"type": "ok"}
+    submit_prompt(state, pane, text)
+    return {"type": "ok"}
+
+
+def submit_prompt(state, pane, text):
+    pane["prompts"] = pane.get("prompts", 0) + 1
+    pane["last_prompt"] = text
+    pane["revision"] += 1
+    if state["auto_result"]:
+        pane["agent_status"] = "working"
+        save(state)
+        run_stop_hook(state, pane, text)
+        pane["agent_status"] = "idle"
+    else:
+        pane["agent_status"] = "working"
+
+
+def cmd_plugin_link(state, args):
+    _, _, _, pos = opts(args, (), ("--disabled", "--enabled"))
+    path = os.path.abspath(pos[0])
+    manifest = os.path.join(path, "herdr-plugin.toml")
+    if not os.path.isdir(path):
+        raise Fail("plugin_path_missing", f"{path} is not a directory")
+    plugin_id = os.path.basename(path)
+    if os.path.exists(manifest):
+        with open(manifest, encoding="utf-8") as f:
+            for line in f:
+                if line.strip().startswith("id") and "=" in line:
+                    plugin_id = line.split("=", 1)[1].strip().strip('"')
+                    break
+    state["plugins"] = [p for p in state["plugins"] if p["id"] != plugin_id]
+    state["plugins"].append({"id": plugin_id, "path": path, "enabled": "--disabled" not in args})
+    return {"plugin": {"id": plugin_id, "path": path}, "type": "plugin_linked"}
+
+
+def cmd_plugin_unlink(state, args):
+    before = len(state["plugins"])
+    state["plugins"] = [p for p in state["plugins"] if p["id"] != args[0]]
+    if len(state["plugins"]) == before:
+        raise Fail("plugin_not_found", f"plugin {args[0]} not found")
+    return {"type": "ok"}
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv:
+        print("herdr fake", file=sys.stderr)
+        return 2
+    lock = open(STATE_PATH + ".lock", "w") if STATE_PATH else None
+    if lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+    state = load()
+    key = tuple(argv[:2])
+    state["calls"].append({"argv": argv, "mutating": key in MUTATING, "ts": time.time()})
+    rc, out, err = 0, None, None
+    try:
+        if argv[0] == "--version":
+            out = f"herdr {state['version']}\n"
+        elif key == ("integration", "status"):
+            out = state["integration_status"]
+        elif key == ("session", "list"):
+            out = json.dumps({"sessions": state["sessions"]}) + "\n"
+        elif key == ("plugin", "list"):
+            lines = [f"{len(state['plugins'])} plugin installed:"] + [
+                f"- {p['id']} ({p['id']}) {'enabled' if p['enabled'] else 'disabled'} [local:{p['path']}]"
+                for p in state["plugins"]]
+            out = "\n".join(lines) + "\n"
+        elif key == ("server", "reload-config"):
+            if not state["server_running"]:
+                raise Fail("server_not_running", "no herdr server is running")
+            out = json.dumps({"id": envelope_id(argv), "result": {"type": "ok"}}) + "\n"
+        elif key in (("pane", "read"), ("agent", "read")):
+            target, _ = (cmd_pane_read if key[0] == "pane" else cmd_agent_read)(state, argv[2:])
+            if target.get("pending_prompt") is not None:
+                v, _, _, _ = opts(argv[2:], ("--source", "--lines", "--format"), ("--ansi", "--raw"))
+                out = stuck_screen(target, int(v.get("--lines") or 0)) + "\n"
+            else:
+                out = pane_screen(target) + "\n"
+        else:
+            handler = globals().get("cmd_" + "_".join(a.replace("-", "_") for a in key))
+            if handler is None or len(argv) < 2:
+                raise Fail("unknown_command", f"unknown command: {' '.join(argv)}", 2)
+            result = handler(state, argv[2:])
+            out = json.dumps({"id": envelope_id(argv), "result": result}) + "\n"
+    except Fail as e:
+        rc = e.rc
+        err = json.dumps({"error": {"code": e.code, "message": e.message}, "id": envelope_id(argv)}) + "\n"
+    except IndexError:
+        rc = 2
+        err = json.dumps({"error": {"code": "usage", "message": "missing argument"}, "id": envelope_id(argv)}) + "\n"
+    save(state)
+    if lock:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+    if out:
+        sys.stdout.write(out)
+    if err:
+        sys.stderr.write(err)
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

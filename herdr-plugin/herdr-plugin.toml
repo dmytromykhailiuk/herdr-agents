@@ -1,0 +1,9 @@
+id = "dmytromykhailiuk.herdr-agents"
+name = "herdr-agents"
+version = "0.1.0"
+min_herdr_version = "0.9.2"
+description = "Relaunch herdr-agent and profile Claude sessions with their original flags and env after a server restart"
+platforms = ["linux", "macos"]
+
+[[startup]]
+command = ["python3", "startup.py"]

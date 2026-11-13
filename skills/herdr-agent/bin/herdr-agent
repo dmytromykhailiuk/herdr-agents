@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+import os
+import sys
+
+MIN_VERSION = (3, 10)
+LOOP_GUARD = "HERDR_AGENTS_REEXEC"
+CANDIDATES = ("python3.14", "python3.13", "python3.12", "python3.11", "python3.10")
+EXTRA_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
+
+
+def _search_dirs():
+    dirs = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
+    pyenv = os.environ.get("PYENV_ROOT") or os.path.expanduser("~/.pyenv")
+    dirs.append(os.path.join(pyenv, "shims"))
+    dirs.extend(EXTRA_DIRS)
+    return dirs
+
+
+def _usable(path):
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def _interpreters():
+    override = os.environ.get("HERDR_AGENTS_PYTHON")
+    if override:
+        yield override
+    for name in CANDIDATES:
+        for d in _search_dirs():
+            path = os.path.join(d, name)
+            if _usable(path):
+                yield path
+
+
+def _reexec():
+    if os.environ.get(LOOP_GUARD):
+        return False
+    os.environ[LOOP_GUARD] = "1"
+    for path in _interpreters():
+        if os.path.realpath(path) == os.path.realpath(sys.executable) and not os.environ.get("HERDR_AGENTS_TEST_FORCE_OLD"):
+            continue
+        try:
+            os.execv(path, [path, os.path.abspath(__file__)] + sys.argv[1:])
+        except OSError:
+            continue
+    return False
+
+
+def _too_old():
+    return sys.version_info < MIN_VERSION or bool(os.environ.get("HERDR_AGENTS_TEST_FORCE_OLD"))
+
+
+if _too_old():
+    _reexec()
+    sys.stderr.write(
+        "herdr-agent: Python 3.10 or newer is required; install it or set HERDR_AGENTS_PYTHON to its path\n"
+    )
+    sys.exit(0 if len(sys.argv) > 1 and sys.argv[1] == "hook" else 1)
+
+os.environ.pop(LOOP_GUARD, None)
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+
+from herdragent import core  # noqa: E402
+
+core.CLI_PATH = core.resolve_cli_path(os.path.abspath(__file__))
+
+from herdragent.cli import main  # noqa: E402
+
+sys.exit(main())
