@@ -35,7 +35,7 @@ herdr-agents/
   skills/herdr-agent/SKILL.md         model-facing usage doc (ported, generic, no hardcoded path; roles explore/plan; --agent; --read-only)
   skills/herdr-agent/bin/herdr-agent  python shim: version check ≥3.10, sys.path += ../lib, core.CLI_PATH = abspath(__file__), cli.main()
   skills/herdr-agent/lib/herdragent/
-    __init__.py        __version__ = "0.1.0"; INTEGRATION = 1
+    __init__.py        __version__ = "0.1.0"; INTEGRATION = 2
     core.py            env/config resolution, paths (ROOT, STATE_DIR, DATA_DIR, CLI_PATH, claude_config_dir()), CliError/die,
                        exit codes, atomic_write, read_json/write_json, log(), truthy/off() env parsing
     herdr.py           herdr CLI wrapper: HerdrError(code,msg), herdr(*args) (uses $HERDR_BIN_PATH or `herdr`), envelope parse,
@@ -263,6 +263,25 @@ Per-agent `settings.json` (written by spawn, unchanged shape):
 {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "'<python>' '<CLI_PATH>' hook stop", "timeout": 30}]}]}}
 ```
 
+### Integration contract (`version --json` → `integration: 2`)
+
+- Env: `HERDR_AGENT`, `HERDR_AGENT_DEPTH` (0/empty = main session, ≥1 = sub-agent), `HERDR_PARENT_SESSION_ID`,
+  `HERDR_ROOT_SESSION_ID` (new in integration 2), `AGENT_VAULT_DIR`/`CLAUDE_VAULT_DIR` forwarding (new in 2).
+- Exit codes: 0 done, 1 error/busy, 3 blocked, 4 timeout, 5 dead, 6 no_result, 7 api_error, 130 interrupted; `--json` may carry
+  `hint` and `api_error`.
+- Agent names map to `run <bare role> --agent <listed agent name>`: a `plugin:` prefix is stripped for the role only
+  (`run vault-keeper --agent agent-vault:vault-keeper` for plugin installs, `run vault-keeper --agent vault-keeper`
+  otherwise; same for `verify-*`). In plan mode the pre-bash hook auto-allows `run vault-keeper` only with `--read-only`
+  (the generic read-only check, no vault special case). The pre-agent redirect of `Agent(vault-keeper)` appends
+  `--read-only` only when the payload `permission_mode` is `plan` and the prompt has a line `Operation: search`; outside
+  plan mode search runs without it so its file-back step can edit notes, and any other operation never gets it (so it
+  needs normal approval in plan mode). The pre-agent redirect of `Agent(vault-reviewer)` (bare or namespaced, e.g.
+  `agent-vault:vault-reviewer`) always appends `--read-only` in every permission mode (the role is read-only by contract
+  and agent-vault dispatches it with `--read-only`), so plan mode auto-allows it.
+- `setup` prints and `doctor` reports a warning when another SessionStart hook in settings.json has a command mentioning
+  `orchestrator` (the rules would be injected twice); foreign hooks are never removed.
+- Consumers warn and fall back when `integration` is lower than what they need.
+
 ---
 
 ## 5. Configuration / environment variables
@@ -271,10 +290,12 @@ Per-agent `settings.json` (written by spawn, unchanged shape):
 |---|---|---|
 | `HERDR_ENV`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, `HERDR_PANE_ID`, `HERDR_BIN_PATH`, `HERDR_SOCKET_PATH` | Herdr | detection / API |
 | `HERDR_AGENT_DEPTH`, `HERDR_AGENT_ID`, `HERDR_AGENT_DIR`, `HERDR_PARENT_SESSION_ID`, `HERDR_AGENT_MAY_DELEGATE` | set in agent tabs | unchanged semantics |
+| `HERDR_ROOT_SESSION_ID` | set in agent tabs | Claude session id of the depth-0 root: the inherited value, else the spawner's `CLAUDE_CODE_SESSION_ID`. Consumers attribute child edits to it, falling back to `HERDR_PARENT_SESSION_ID` |
+| `AGENT_VAULT_DIR`, `CLAUDE_VAULT_DIR` | unset | forwarded into agent tabs when set in the spawner's environment |
 | `HERDR_AGENT_MAX_DEPTH` | 2 | depth limit |
 | `HERDR_AGENT_ROOT` | `$TMPDIR/herdr-agents` | per-agent runtime dirs |
 | `HERDR_AGENT_BIN` | realpath of running CLI | path printed into context / Stop hook |
-| `HERDR_AGENT` | (exported via CLAUDE_ENV_FILE) | for other tools; read-only output |
+| `HERDR_AGENT` | (exported via CLAUDE_ENV_FILE and into every agent tab) | absolute path of the CLI for other tools; they resolve it as tool-specific override (e.g. `VERIFY_HERDR_AGENT`) → `HERDR_AGENT` → `herdr-agent` on PATH → `~/.claude/skills/herdr-agent/bin/herdr-agent` |
 | `CLAUDE_ORCHESTRATOR` | on | `off/0/false/no` disables orchestrator injection |
 | `HERDR_AGENTS` | on | master switch for all hooks (`off` = every hook no-op) |
 | `HERDR_AGENTS_REDIRECT` | on | Agent-tool redirect |

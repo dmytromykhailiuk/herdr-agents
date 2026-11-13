@@ -17,6 +17,8 @@ UNQUOTED_FORBIDDEN = set(";&|<>()`\n\r")
 VAR_RE = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})")
 CLI_VAR_RE = re.compile(r"^\$(?:HERDR_AGENT|\{HERDR_AGENT\})$")
 
+VAULT_SEARCH_RE = re.compile(r"^\s*Operation:\s*search\b", re.IGNORECASE | re.MULTILINE)
+
 ALLOW_REASON = "herdr-agent (herdr-agents plugin)"
 
 
@@ -55,7 +57,7 @@ def role_args(subagent_type, env):
         return "plan", ["plan"]
     if not t or t == "general-purpose":
         return "general", ["general"]
-    role = sanitize_role(t)
+    role = sanitize_role(t.rsplit(":", 1)[-1])
     return role, [role, "--agent", t]
 
 
@@ -95,6 +97,10 @@ def pre_agent(payload, env):
         return
     import shlex
     role, args = role_args(tool_input.get("subagent_type"), env)
+    if role == "vault-reviewer" or (
+            role == "vault-keeper" and payload.get("permission_mode") == "plan"
+            and VAULT_SEARCH_RE.search(str(tool_input.get("prompt") or ""))):
+        args.append("--read-only")
     model = tool_input.get("model")
     model = model.strip() if isinstance(model, str) and model.strip() else DEFAULT_MODELS.get(role)
     if model:

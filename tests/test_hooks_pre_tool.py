@@ -11,9 +11,11 @@ from _base import CLI, IsolatedTestCase
 
 
 class PreAgentTest(IsolatedTestCase):
-    def agent(self, subagent_type="Explore", env=None, **tool_input):
+    def agent(self, subagent_type="Explore", env=None, mode=None, **tool_input):
         payload = {"session_id": "s1", "tool_name": "Agent", "tool_use_id": "toolu_01ABC",
                    "tool_input": dict({"prompt": "find the parser", "description": "d"}, **tool_input)}
+        if mode:
+            payload["permission_mode"] = mode
         if subagent_type is not None:
             payload["tool_input"]["subagent_type"] = subagent_type
         r = self.run_hook("pre-agent", payload, env=env if env is not None else self.herdr_env())
@@ -41,6 +43,41 @@ class PreAgentTest(IsolatedTestCase):
         self.assertEqual(prompt_file.read_text(), "find the parser")
         self.assertIn("plan mode", reason)
         self.assertIn("read-only", reason)
+
+    def test_vault_keeper_search_read_only_only_in_plan_mode(self):
+        prompt = "Operation: search\nQuestion: x"
+        argv = self.command_of(self.denied(self.agent("vault-keeper", prompt=prompt, mode="plan")))
+        self.assertEqual(argv[1:5], ["run", "vault-keeper", "--agent", "vault-keeper"])
+        self.assertIn("--read-only", argv)
+        for mode in (None, "default", "auto"):
+            with self.subTest(mode):
+                argv = self.command_of(self.denied(self.agent("vault-keeper", prompt=prompt, mode=mode)))
+                self.assertNotIn("--read-only", argv)
+
+    def test_plugin_namespaced_agents_use_bare_role(self):
+        prompt = "Operation: search\nQuestion: x"
+        argv = self.command_of(self.denied(
+            self.agent("agent-vault:vault-keeper", prompt=prompt, mode="plan")))
+        self.assertEqual(argv[1:5], ["run", "vault-keeper", "--agent", "agent-vault:vault-keeper"])
+        self.assertIn("--read-only", argv)
+        argv = self.command_of(self.denied(self.agent("agent-vault:vault-keeper", prompt=prompt)))
+        self.assertNotIn("--read-only", argv)
+        argv = self.command_of(self.denied(self.agent("verify-loop:verify-reviewer")))
+        self.assertEqual(argv[1:5], ["run", "verify-reviewer", "--agent", "verify-loop:verify-reviewer"])
+
+    def test_vault_reviewer_always_read_only(self):
+        for name in ("vault-reviewer", "agent-vault:vault-reviewer"):
+            for mode in (None, "default", "plan"):
+                with self.subTest(name=name, mode=mode):
+                    argv = self.command_of(self.denied(self.agent(name, prompt="review", mode=mode)))
+                    self.assertEqual(argv[1:5], ["run", "vault-reviewer", "--agent", name])
+                    self.assertIn("--read-only", argv)
+
+    def test_vault_keeper_other_operations_not_read_only(self):
+        for prompt in ("Operation: remember\nnote", "Operation: update", "do something"):
+            with self.subTest(prompt):
+                argv = self.command_of(self.denied(self.agent("vault-keeper", prompt=prompt)))
+                self.assertNotIn("--read-only", argv)
 
     def test_plan_delegates_below_max_depth(self):
         argv = self.command_of(self.denied(self.agent("Plan")))
@@ -240,6 +277,19 @@ class PreBashTest(IsolatedTestCase):
         ):
             with self.subTest(command):
                 self.assert_silent(command, mode="plan")
+
+    def test_plan_mode_vault_keeper_needs_read_only(self):
+        cli = shlex.quote(str(CLI))
+        self.assert_allowed(f"{cli} run vault-keeper --agent vault-keeper --read-only -f /tmp/p.md", mode="plan")
+        self.assert_silent(f"{cli} run vault-keeper --agent vault-keeper -f /tmp/p.md", mode="plan")
+        self.assert_silent(f"{cli} run vault-keeper -f /tmp/p.md", mode="plan")
+        self.assert_allowed(f"{cli} run vault-keeper --agent vault-keeper -f /tmp/p.md")
+
+    def test_plan_mode_vault_reviewer_read_only_allowed(self):
+        cli = shlex.quote(str(CLI))
+        for name in ("vault-reviewer", "agent-vault:vault-reviewer"):
+            self.assert_allowed(f"{cli} run vault-reviewer --agent {name} --read-only -f /tmp/p.md", mode="plan")
+        self.assert_silent(f"{cli} run vault-reviewer --agent vault-reviewer -f /tmp/p.md", mode="plan")
 
     def test_opt_outs(self):
         cli = shlex.quote(str(CLI))

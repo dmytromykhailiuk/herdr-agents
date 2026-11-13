@@ -44,6 +44,31 @@ class RunTest(CliTestCase):
         self.assertEqual(claude_args[claude_args.index("--effort") + 1], "medium")
         self.assertEqual(claude_args[claude_args.index("--permission-mode") + 1], "auto")
 
+    def create_call(self, **env):
+        r = self.run_cli("run", "worker", "--prompt", "x", env=self.herdr_env(**env))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return next(c for c in self.fake_calls() if c[:2] == ["tab", "create"])
+
+    def test_root_session_id_falls_back_to_spawner_session(self):
+        create = self.create_call(CLAUDE_CODE_SESSION_ID="sess-root")
+        self.assertIn("HERDR_ROOT_SESSION_ID=sess-root", create)
+        self.assertIn("HERDR_PARENT_SESSION_ID=sess-root", create)
+
+    def test_root_session_id_inherited(self):
+        create = self.create_call(CLAUDE_CODE_SESSION_ID="sess-mid", HERDR_ROOT_SESSION_ID="sess-root")
+        self.assertIn("HERDR_ROOT_SESSION_ID=sess-root", create)
+        self.assertIn("HERDR_PARENT_SESSION_ID=sess-mid", create)
+
+    def test_herdr_agent_and_vault_env_forwarded(self):
+        create = self.create_call(AGENT_VAULT_DIR="/v/a", CLAUDE_VAULT_DIR="/v/c")
+        self.assertTrue(any(a.startswith("HERDR_AGENT=") and a.endswith("herdr-agent") for a in create), create)
+        self.assertIn("AGENT_VAULT_DIR=/v/a", create)
+        self.assertIn("CLAUDE_VAULT_DIR=/v/c", create)
+
+    def test_vault_env_not_forwarded_when_unset(self):
+        create = self.create_call()
+        self.assertFalse(any(a.startswith(("AGENT_VAULT_DIR=", "CLAUDE_VAULT_DIR=")) for a in create), create)
+
     def test_run_keep_files_and_tab(self):
         r = self.run_cli("run", "worker", "--prompt", "x", "--keep", "--json", env=self.henv)
         self.assertEqual(r.returncode, 0, r.stderr)

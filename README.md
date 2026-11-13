@@ -101,7 +101,7 @@ background Bash call per agent.
 | `list [--json]` | all known agents with live state |
 | `close <id> [--keep-files] [--force]` | close the tab and remove the files |
 | `gc [--older-than H] [--close-idle] [--dry-run]` | remove directories of agents whose tabs are gone |
-| `path`, `version [--json]` | the CLI's absolute path; version and integration number |
+| `path`, `version [--json]` | the CLI's absolute path; version and integration number (currently 2) |
 | `setup`, `doctor`, `hook …`, `herdr …` | installation, diagnostics, hook and Herdr-plugin entry points |
 
 Options of `run`/`spawn`:
@@ -257,7 +257,7 @@ herdr-agent doctor [--json]
 
 Checks Python, Herdr version and its Claude integration, whether the shell is inside Herdr, hooks (warns about duplicates when
 both the plugin and `setup` installed them), permission rules, the bin link, the Herdr plugin link, the CLI pointer,
-`resume_agents_on_restore`, `claude`, and the number of launch records with the last restore log line. Exit 1 when a check fails.
+another SessionStart hook that injects orchestrator rules (warning), `resume_agents_on_restore`, `claude`, and the number of launch records with the last restore log line. Exit 1 when a check fails.
 
 ## Uninstall
 

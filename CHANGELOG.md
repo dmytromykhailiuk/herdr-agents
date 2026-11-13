@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Integration 2: agent tabs get `HERDR_ROOT_SESSION_ID` and `HERDR_AGENT`, and forward `AGENT_VAULT_DIR`/`CLAUDE_VAULT_DIR`.
+- Plan mode auto-allows `run vault-keeper` only with `--read-only`; the Agent-tool redirect adds it for `Operation: search`.
+- The Agent-tool redirect of `vault-reviewer` (bare or plugin-namespaced) always adds `--read-only`, so plan mode auto-allows it.
+- `setup`/`doctor` warn about a foreign SessionStart hook that injects orchestrator rules.
+
 ## 0.1.0
 
 - `herdr-agent` skill and CLI: run Claude sub-agents as real interactive sessions in Herdr tabs (`run`, `spawn`, `wait`,

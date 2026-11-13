@@ -164,6 +164,25 @@ def _ours_signature(data):
     return sig
 
 
+def foreign_orchestrator_hooks(data):
+    hooks = data.get("hooks") if isinstance(data, dict) and isinstance(data.get("hooks"), dict) else {}
+    found = []
+    for grp in hooks.get("SessionStart") or []:
+        inner = grp.get("hooks") if isinstance(grp, dict) else None
+        for h in inner if isinstance(inner, list) else []:
+            cmd = str(h.get("command", "")) if isinstance(h, dict) else ""
+            if "orchestrator" in cmd.lower() and not _is_ours(h):
+                found.append(cmd)
+    return found
+
+
+def foreign_orchestrator_in(path):
+    try:
+        return foreign_orchestrator_hooks(json.loads(Path(path).read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return []
+
+
 def count_hooks(path):
     try:
         return len(_ours_signature(json.loads(Path(path).read_text(encoding="utf-8"))))
@@ -422,6 +441,10 @@ def part_settings(ctx):
             if "bin" in ctx.parts or (link.is_symlink() and os.path.realpath(link) == os.path.realpath(cli_path())):
                 paths.append(str(link))
             _add_perms(after, perm_rules(list(dict.fromkeys(paths))))
+    if do_hook and not ctx.uninstall:
+        for cmd in foreign_orchestrator_hooks(after):
+            say(f"warning: another SessionStart hook in {path} injects orchestrator rules ({cmd}); "
+                "they would be injected twice. Remove it or set CLAUDE_ORCHESTRATOR=0")
     changed = _write_settings(path, before, after, ctx.dry)
     if not changed:
         say(f"settings unchanged: {path}")
@@ -651,6 +674,11 @@ def collect_checks():
             _check(checks, name, "fail", f"no hooks in {path}; run `herdr-agent setup`")
         else:
             _check(checks, name, "fail", f"{n} hooks in {path}, expected {len(HOOKS)}; run `herdr-agent setup`")
+    for scope, path in files:
+        for cmd in foreign_orchestrator_in(path):
+            _check(checks, f"orchestrator_hook_{scope}", "warn",
+                   f"another SessionStart hook in {path} injects orchestrator rules ({cmd}); "
+                   "they would be injected twice")
     if not bundle and total > len(HOOKS):
         _check(checks, "hooks_duplicates", "warn", f"{total} hooks across user and project settings")
 

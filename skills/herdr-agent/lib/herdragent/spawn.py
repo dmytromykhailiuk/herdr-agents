@@ -16,6 +16,8 @@ from .results import agent_dir, cli_ref, read_result, save_meta, transcript_path
 from .roles import sanitize_role
 from .trust import claude_invocation, ensure_trusted
 
+FORWARDED_ENV = ("AGENT_VAULT_DIR", "CLAUDE_VAULT_DIR")
+
 
 def launches_call(name, *args, **kwargs):
     try:
@@ -142,7 +144,14 @@ def do_spawn(args, prompt):
         "HERDR_AGENT_ID": aid,
         "HERDR_AGENT_DEPTH": str(depth + 1),
         "HERDR_PARENT_SESSION_ID": os.environ.get("CLAUDE_CODE_SESSION_ID", ""),
+        "HERDR_ROOT_SESSION_ID": os.environ.get("HERDR_ROOT_SESSION_ID")
+                                 or os.environ.get("CLAUDE_CODE_SESSION_ID", ""),
     }
+    if core.CLI_PATH:
+        tab_env["HERDR_AGENT"] = core.CLI_PATH
+    for name in FORWARDED_ENV:
+        if os.environ.get(name):
+            tab_env[name] = os.environ[name]
     if meta["claude_config_dir"]:
         tab_env["CLAUDE_CONFIG_DIR"] = meta["claude_config_dir"]
     if args.delegate:

@@ -26,7 +26,8 @@ Stdout carries only the agent's final message. Status lines go to stderr. On
 success the tab is closed and the files are removed.
 
 `--json` output includes `session_id` (the agent's Claude session), and every agent tab gets
-`HERDR_PARENT_SESSION_ID` (the spawning session's `CLAUDE_CODE_SESSION_ID`).
+`HERDR_PARENT_SESSION_ID` (the spawning session's `CLAUDE_CODE_SESSION_ID`), `HERDR_ROOT_SESSION_ID` (the depth-0 root
+session) and `HERDR_AGENT` (the CLI path).
 
 - The Bash tool times out after 10 minutes, so run anything that may take longer
   with `run_in_background: true`. You are notified when it exits, and the output

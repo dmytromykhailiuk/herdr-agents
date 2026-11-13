@@ -238,7 +238,7 @@ class ShimTest(IsolatedTestCase):
         self.assertEqual(v.returncode, 0, v.stderr)
         self.assertIn("0.1.0", v.stdout)
         j = self.run_cli("version", "--json")
-        self.assertEqual(j.json(), {"version": "0.1.0", "integration": 1})
+        self.assertEqual(j.json(), {"version": "0.1.0", "integration": 2})
         p = self.run_cli("path")
         self.assertEqual(p.stdout.strip(), str(CLI))
 

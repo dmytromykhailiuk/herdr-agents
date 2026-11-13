@@ -300,6 +300,42 @@ class HerdrPartTest(SetupTestCase):
         self.assertNotEqual(p.returncode, 0)
 
 
+class ForeignOrchestratorHookTest(SetupTestCase):
+    FOREIGN = {"hooks": {"SessionStart": [{"matcher": "startup", "hooks": [
+        {"type": "command", "command": "python3 ~/.claude/hooks/inject_orchestrator.py"}]}]}}
+
+    def write_foreign(self):
+        self.settings.write_text(json.dumps(self.FOREIGN), encoding="utf-8")
+
+    def test_setup_warns_and_keeps_foreign_hook(self):
+        self.write_foreign()
+        p = self.setup_cmd("setup")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("injects orchestrator rules", p.stdout)
+        self.assertIn("inject_orchestrator.py", p.stdout)
+        commands = [c for _, _, c, _ in self.hook_commands(self.settings_data())]
+        self.assertIn("python3 ~/.claude/hooks/inject_orchestrator.py", commands)
+
+    def test_setup_silent_without_foreign_hook(self):
+        p = self.setup_cmd("setup")
+        self.assertNotIn("orchestrator", p.stdout)
+
+    def test_doctor_warns(self):
+        self.setup_cmd("setup")
+        data = self.settings_data()
+        data["hooks"]["SessionStart"].extend(self.FOREIGN["hooks"]["SessionStart"])
+        self.settings.write_text(json.dumps(data), encoding="utf-8")
+        p = self.setup_cmd("doctor", "--json")
+        checks = {c["name"]: c for c in json.loads(p.stdout)["checks"]}
+        self.assertEqual(checks["orchestrator_hook_user"]["status"], "warn")
+        self.assertEqual(p.returncode, 0, p.stdout)
+
+    def test_doctor_no_warning_after_clean_setup(self):
+        self.setup_cmd("setup")
+        checks = {c["name"] for c in json.loads(self.setup_cmd("doctor", "--json").stdout)["checks"]}
+        self.assertNotIn("orchestrator_hook_user", checks)
+
+
 class DoctorTest(SetupTestCase):
     def doctor(self, env=None):
         p = self.setup_cmd("doctor", "--json", env=env)
