@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 - 2026-11-17
 
+- Orchestrator skill: delegated agents record implementation decisions with `agent-report note` and end their final report with a `## Decisions` section.
 - Integration 2: agent tabs get `HERDR_ROOT_SESSION_ID` and `HERDR_AGENT`, and forward `AGENT_VAULT_DIR`/`CLAUDE_VAULT_DIR`.
 - Plan mode auto-allows `run vault-keeper` only with `--read-only`; the Agent-tool redirect adds it for `Operation: search`.
 - The Agent-tool redirect of `vault-reviewer` (bare or plugin-namespaced) always adds `--read-only`, so plan mode auto-allows it.

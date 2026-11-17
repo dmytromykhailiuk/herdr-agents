@@ -192,7 +192,7 @@ class FakeHerdrTest(IsolatedTestCase):
     def test_plugin_link_unlink_list_and_reload(self):
         plugin = self.root / "plug"
         plugin.mkdir()
-        (plugin / "herdr-plugin.toml").write_text('id = "dmytromykhailiuk.herdr-agents"\nversion = "0.1.0"\n',
+        (plugin / "herdr-plugin.toml").write_text('id = "dmytromykhailiuk.herdr-agents"\nversion = "0.1.1"\n',
                                                   encoding="utf-8")
         self.herdr("plugin", "link", str(plugin))
         listing = self.herdr("plugin", "list").stdout
@@ -236,9 +236,9 @@ class ShimTest(IsolatedTestCase):
         from _base import CLI
         v = self.run_cli("version")
         self.assertEqual(v.returncode, 0, v.stderr)
-        self.assertIn("0.1.0", v.stdout)
+        self.assertIn("0.1.1", v.stdout)
         j = self.run_cli("version", "--json")
-        self.assertEqual(j.json(), {"version": "0.1.0", "integration": 2})
+        self.assertEqual(j.json(), {"version": "0.1.1", "integration": 2})
         p = self.run_cli("path")
         self.assertEqual(p.stdout.strip(), str(CLI))
 

@@ -1,6 +1,6 @@
 {
   "name": "herdr-agents",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Run Claude sub-agents as real interactive sessions in Herdr tabs, with orchestrator rules, Agent-tool redirect and restart resume.",
   "author": {
     "name": "dmytromykhailiuk"
