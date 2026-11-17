@@ -81,7 +81,7 @@ The agent sees nothing from this chat. Every prompt states:
 - the constraints: the user's rules (e.g. no code comments), project skills to load, what not to touch
 - the acceptance criteria
 - the answer shape: a summary of at most ~15 lines, the list of changed files, and file paths for anything
-  long (logs, reports, diffs) instead of inlining it
+  long (logs, reports, diffs) instead of inlining it. Delegated agents that make implementation decisions record each one with `agent-report note decision "<what>" --why "<why>" [--alt "<rejected option>"] [--files a,b]` when the `agent-report` CLI is available, and end their final report with a `## Decisions` section (one line per decision: what, why).
 
 Write long prompts to a file in the scratchpad and pass them with `--prompt-file`.
 
